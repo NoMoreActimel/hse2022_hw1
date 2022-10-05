@@ -106,39 +106,44 @@ poil_gapClosed_file = open('Poil_gapClosed.fa', 'r')
 def get_file_info(file):
     """Basic anylysis for fasta file"""
     """:param file: input fasta file"""
-    """:return: (number_of_sequences, total_length, max_length, max_ind, N50)"""
+    """:return: (number_of_sequences, total_length, max_length, longest_seq_start, N50)"""
 
     number_of_seq = 0
+    cur_seq_start = 0
     cur_seq_length = 0
-    lengths = []
-    max_length = 0
-    max_ind = 0
+    total_length_read = 0
+    sequences: list[tuple[int, int]] = []
     n50_length = 0
 
-    for line_ind, line in enumerate(file):
+    for line in file.readlines():
         if line[0] == '>':
             if cur_seq_length:
-                lengths.append(cur_seq_length)
-                if max_length < cur_seq_length:
-                    max_length = cur_seq_length
-                    max_ind = cur_seq_line_ind
+                sequences.append((cur_seq_length, cur_seq_start))
+            cur_seq_start = total_length_read
             cur_seq_length = 0
-            cur_seq_line_ind = line_ind
         else:
             cur_seq_length += len(line.strip())
+        total_length_read += len(line)  
     
-    lengths.sort(reverse=True)
-    number_of_seq = len(lengths)
-    total_length = sum(lengths)
+    if total_length_read:
+        sequences.append((cur_seq_length, cur_seq_start))
+    
+    sequences.sort(reverse=True)
+
+    max_length = sequences[0][0]
+    longest_seq_start = sequences[0][1]
+
+    number_of_seq = len(sequences)
+    total_length = sum(sequence[0] for sequence in sequences)
 
     top_n_sum_length = 0
-    for length in lengths:
+    for length, start in sequences:
         top_n_sum_length += length
         if top_n_sum_length >= total_length / 2:
             n50_length = length
             break
     
-    return number_of_seq, total_length, max_length, max_ind, n50_length
+    return number_of_seq, total_length, max_length, longest_seq_start, n50_length
 ```
 
 ### 3. Пишем обёртку для вывода и получаем информацию для контигов и скаффолдов
@@ -156,10 +161,10 @@ print_file_info(poil_contig_file, contig_info)
 ```
 ```text
 Info about Poil_contig.fa:
-	Number of sequences: 627
-	Total length of sequences: 3904451
+	Number of sequences: 628
+	Total length of sequences: 3926785
 	Max sequence length: 179307
-	N50: 53980
+	N50: 52802
 ```
 
 ```python
@@ -168,63 +173,81 @@ print_file_info(poil_scaffold_file, scaffold_info)
 ```
 ```text
 Info about Poil_scaffold.fa:
-	Number of sequences: 72
-	Total length of sequences: 3876342
+	Number of sequences: 73
+	Total length of sequences: 3876446
 	Max sequence length: 3834891
 	N50: 3834891
 ```
 
 ### 4. Функция для подсчёта гэпов в самой длинной последовательности
 ```python
-def count_gaps_for_max_seq(file, max_seq_line_ind):
+def count_gaps_for_max_seq(file, longest_seq_start, longest_seq_length):
     """
     Counts gaps and overall gaps' length in the longest sequence 
     :param file: input fasta file
-    :param max_seq_line_ind: index of line where the longest sequence starts
+    :param longest_seq_start: index where the longest sequence starts
+    :param longest_seq_length: length of longest sequence
     :return: number_of_gaps, gaps_total_length
     """
     gap_cnt = 0
     cnt_N = 0
+    cnt_N_in_a_row = 0
 
-    for line_ind, line in enumerate(file):
-        if line_ind > max_seq_line_ind:
-            while line and line[0] != '>':
-                cnt_N_in_a_row = 0
+    file.seek(longest_seq_start)
+    line = file.readline()
+    assert line[0] == '>'
 
-                for c in line.strip():
-                    if c == 'N':
-                        cnt_N_in_a_row += 1
-                        cnt_N += 1
-                    elif cnt_N_in_a_row:
-                        gap_cnt += 1
-                        cnt_N_in_a_row = 0
-
-                line = file.readline()
-            break
+    sequence = file.read(longest_seq_length)
+    for i, c in enumerate(sequence.strip()):
+        if c == '\n':
+            continue
+        if c == 'N':
+            cnt_N_in_a_row += 1
+            cnt_N += 1
+        elif cnt_N_in_a_row:
+            gap_cnt += 1
+            cnt_N_in_a_row = 0
     
     return gap_cnt, cnt_N
 ```
 
 ### 5. Вызываем для скаффолдов с обычными гэпами и сокращёнными
 ```python
-poil_scaffold_file.seek(0)
-scaffold_gap_info = count_gaps_for_max_seq(poil_scaffold_file, scaffold_info[3])
+scaffold_gap_info = count_gaps_for_max_seq(
+    file=poil_scaffold_file, 
+    longest_seq_start=scaffold_info[3], 
+    longest_seq_length=scaffold_info[2]
+)
 print(f"Gaps for biggest scaffold: {scaffold_gap_info[0]}")
 print(f"Their total length: {scaffold_gap_info[1]}")
 ```
 ```text
-Gaps for biggest scaffold: 61
-Their total length: 6780
+Gaps for biggest scaffold: 58
+Their total length: 6430
 ```
 
 ```python
 gapClosed_info = get_file_info(poil_gapClosed_file)
 poil_gapClosed_file.seek(0)
-gapClosed_gap_info = count_gaps_for_max_seq(poil_gapClosed_file, gapClosed_info[3])
+gapClosed_gap_info = count_gaps_for_max_seq(
+    file=poil_gapClosed_file, 
+    longest_seq_start=gapClosed_info[3],
+    longest_seq_length=gapClosed_info[2]
+)
 print(f"Gaps for biggest scaffold with gap_close: {gapClosed_gap_info[0]}")
 print(f"Their total length: {gapClosed_gap_info[1]}")
 ```
 ```text
 Gaps for biggest scaffold with gap_close: 8
 Their total length: 1423
+```
+
+### 6. Создаём longest.fa
+```python
+with open('longest.fa', 'w') as longest_file:
+    poil_scaffold_file.seek(scaffold_info[3])
+    sequence = poil_scaffold_file.readline()
+    assert sequence[0] == '>'
+    sequence += poil_scaffold_file.read(scaffold_info[2])
+    longest_file.write(sequence)    
 ```
